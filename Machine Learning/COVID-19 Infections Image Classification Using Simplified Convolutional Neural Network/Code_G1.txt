@@ -1,0 +1,450 @@
+######################################################### Package Imports ################################################################
+
+import warnings
+warnings.filterwarnings('ignore')
+
+# Import packages
+import pandas as pd
+import numpy as np
+import itertools
+import cv2
+from PIL import Image
+import math
+import os
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.model_selection import train_test_split, PredefinedSplit, cross_val_score, GridSearchCV
+from sklearn.neural_network import MLPClassifier
+from sklearn.linear_model import SGDClassifier, LogisticRegression
+from sklearn.metrics import roc_curve, precision_recall_curve, plot_confusion_matrix, confusion_matrix, auc
+import seaborn as sns 
+
+!pip install -q -U keras-tuner
+import keras_tuner as kt
+
+!pip install tensorflow==2.5.0
+import tensorflow
+from tensorflow import keras
+from tensorflow.keras import Sequential, layers, metrics, optimizers, preprocessing, callbacks, regularizers
+
+
+from cycler import cycler
+from livelossplot.outputs import MatplotlibPlot
+import matplotlib.pyplot as plt
+import matplotlib
+%matplotlib inline
+
+######################################################### Data Preprocessing Step ########################################################
+
+# Create csv file with labels for first dataset
+os.chdir(r'Covid Xray local test data')
+
+folders = ['Covid', 'nonCovid']
+
+files = []
+
+for folder in folders:
+    for file in os.listdir(folder):
+        files.append([file, folder])
+
+os.chdir(r'..')
+# Name columns for dataset and populate them
+raw_df1 = pd.DataFrame(files, columns=['filename', 'pcr_test'])
+
+# Load second dataset
+rawdata = pd.read_csv("metadata.csv")
+raw_df2 = pd.DataFrame(rawdata)
+
+# filter out images with no pcr result and only include ones with positive/negative results
+raw_df2 = raw_df2.loc[(raw_df2['pcr_test'] == 'positive') | (raw_df2['pcr_test'] == 'negative')]
+raw_df2 = raw_df2.filter(['filename','pcr_test'])
+
+# Combine both datasets together
+frames = [raw_df1, raw_df2]
+
+final_raw_df = pd.concat(frames)
+
+# Change labels to 1 for positive results and 0 for negative results
+final_raw_df['pcr_test'] = final_raw_df['pcr_test'].replace(['Covid', 'positive', 'nonCovid', 'negative'], ['1', '1', 
+                                                                                                            '0', '0'])
+
+# Include only 250 positive samples and 253 negative samples
+final_raw_df_pos = final_raw_df[final_raw_df['pcr_test'] == '1'][:250]
+final_raw_df_neg = final_raw_df[final_raw_df['pcr_test'] == '0'][:253]
+
+# Create the new CSV file with filenames and binary labels
+frames = [final_raw_df_pos, final_raw_df_neg]
+final_raw_df2 = pd.concat(frames)
+# Change all image extensions to .jpg
+final_raw_df2['filename'] = final_raw_df2['filename'].str[:-4]
+final_raw_df2['filename'] = final_raw_df2['filename'].astype(str) + '.jpg'
+final_raw_df2['filename'] = final_raw_df2['filename'].str.replace('..','.', regex=False)
+# Save new excel file
+final_raw_df2.to_csv('FinalData.csv', index=False)
+
+# Assign image paths from both datasets
+path = "covid19/"
+path2 = "Covid Xray local test data/Covid/"
+path3 = "Covid Xray local test data/nonCovid/"
+path4 = "NewFolder/"
+dirs = os.listdir( path )
+dirs2 = os.listdir( path2 )
+dirs3 = os.listdir( path3 )
+os.mkdir("NewFolder/")
+
+# Resize images from first dataset to 256x256
+def resize():
+    for item in dirs:
+        if os.path.isfile(path+item):
+            im = Image.open(path+item)
+            f, e = os.path.splitext(path4+item)
+            imResize = im.resize((256,256), Image.ANTIALIAS)
+            imResize.convert('RGB').save(f + '.jpg', 'JPEG', quality=90)
+
+# Resize positive samples images from second dataset to 256x256
+def resize2():
+    for item in dirs2:
+        if os.path.isfile(path2+item):
+            im = Image.open(path2+item)
+            f, e = os.path.splitext(path4+item)
+            imResize = im.resize((256,256), Image.ANTIALIAS)
+            imResize.convert('RGB').save(f + '.jpg', 'JPEG', quality=90)
+
+# Resize negative samples images from second dataset to 256x256
+def resize3():
+    for item in dirs3:
+        if os.path.isfile(path3+item):
+            im = Image.open(path3+item)
+            f, e = os.path.splitext(path4+item)
+            imResize = im.resize((256,256), Image.ANTIALIAS)
+            imResize.convert('RGB').save(f + '.jpg', 'JPEG', quality=90)
+            
+resize()
+resize2()
+resize3()
+
+# Read clean data
+final_data = pd.read_csv("FinalData.csv")
+
+# Create array with image filenames
+array_filenames = []
+
+# Iterate over filenames in folder and populate array
+for i in final_data:
+        array_filenames.append(final_data[i].values)
+
+# Convert Series to array
+array_filenames = np.array(array_filenames)
+array_filenames = np.array(array_filenames[0])
+
+# Obtain pixel values of images from CSV file
+IMG_DIR = "NewFolder/"
+pixel_arr = []
+
+for i in array_filenames:
+    img_array = cv2.imread(os.path.join(IMG_DIR,i), cv2.IMREAD_GRAYSCALE)
+
+    img_array = (img_array.flatten())
+
+    pixel_arr.append(img_array)
+
+# Initialize Input dataframe
+X = pd.DataFrame(pixel_arr)
+# Convert integer values of X into floats
+X = X.astype(np.float32)
+
+# Display first image just to check
+img_data = (X.loc[0]).to_numpy(dtype=np.uint8)
+
+# Reshape image array 
+imgMatrix = np.reshape(img_data,(256, 256))
+
+image = Image.fromarray(imgMatrix)
+
+image
+
+# Normalize inputs (pixels from 0-255 to 0-1)
+X = np.array(X/255.0)
+print(X.shape)
+# Initialize outputs
+y = final_data['pcr_test']
+print(y.shape)
+
+# Split data into training (70%) validation (20%) and testing (10%) sets
+X_train, X_val, y_train, y_val = train_test_split(X, y, test_size = 0.3, random_state=1)
+X_val, X_test, y_val, y_test = train_test_split(X_val, y_val, test_size = 0.33, random_state=1)
+
+# Reshape inputs array to 4D inputs (n_samples, height, width, channels) [1 for Grayscale and 3 for RGB]
+X_train = X_train.reshape(X_train.shape[0],256,256,1)
+X_val = X_val.reshape(X_val.shape[0],256,256,1)
+X_test = X_test.reshape(X_test.shape[0],256,256,1)
+
+# Convert to float
+y_train = np.array(y_train).astype(np.float)
+y_val = np.array(y_val).astype(np.float)
+y_test = np.array(y_test).astype(np.float)
+
+####################################################### Training AlexNet Model and Evaluation ############################################
+def Alexnet():
+  # Initialize the model
+  model = Sequential()
+
+  # layer 1: convolutional layer + max-pooling layer
+  model.add(layers.Conv2D(filters = 96, kernel_size = (11,11), strides= 4, padding = 'valid', activation='relu', input_shape = (256,256,1)))
+  model.add(layers.MaxPooling2D(pool_size = (3,3), strides = 2))
+
+  # layer 2: convolutional layer + max-pooling layer 
+  model.add(layers.Conv2D(filters = 256, kernel_size = (5,5), padding = 'same', activation = 'relu'))
+  model.add(layers.MaxPooling2D(pool_size = (3,3), strides = 2))
+
+  # layers 3-5: three convolutional layers + 1 max-pooling layer
+  model.add(layers.Conv2D(filters = 384, kernel_size = (3,3), padding = 'same', activation = 'relu'))
+  model.add(layers.Conv2D(filters = 384, kernel_size = (3,3), padding = 'same', activation = 'relu'))
+  model.add(layers.Conv2D(filters = 256, kernel_size = (3,3), padding = 'same', activation = 'relu'))
+  model.add(layers.MaxPooling2D(pool_size = (3,3), strides = 2))
+
+  # layers 6 - 8: two fully connected hidden layers and one fully connected output layer
+  model.add(layers.Flatten())
+  model.add(layers.Dense(4096, activation = 'relu'))
+  model.add(layers.Dropout(0.5))
+  model.add(layers.Dense(4096, activation = 'relu'))
+  model.add(layers.Dropout(0.5))
+  model.add(layers.Dense(1, activation = 'sigmoid'))
+
+  # compile the model with a loss funciton, a metric and and optimizer method for estimating the loss function
+  opt = optimizers.SGD(lr = 0.0001)
+  model.compile(loss = metrics.categorical_crossentropy,
+                optimizer = opt,
+                metrics = ['accuracy'])
+
+  return model
+
+model = Alexnet()
+
+def train_model(model, X_train, y_train, X_test, y_test, epochs, batch_size):
+  # Data generator
+  datagen = preprocessing.image.ImageDataGenerator(rotation_range = 5, width_shift_range = 0.1, 
+                               height_shift_range = 0.1, horizontal_flip = True)
+  # iteration on the training set
+  it_train = datagen.flow(X_train, y_train, batch_size = batch_size)
+  # path to save the checkpoint 
+  path_cp = os.getcwd() + '/' + 'weights_.hdf5'
+  checkpoint_ = callbacks.ModelCheckpoint(path_cp, monitor = 'loss', save_best_only = True, 
+                                mode = 'auto')
+  steps = X_train.shape[0]//batch_size
+  # Fitting the model
+  history = model.fit_generator(it_train, epochs = epochs, steps_per_epoch = steps, 
+                                validation_data = (X_test, y_test), verbose = 1, 
+                                callbacks = checkpoint_)
+  # Evaluating the model
+  _, acc = model.evaluate(X_test, y_test, verbose = 1)
+  print('%.3f' % (acc * 100.0))
+  
+  return history, acc
+
+train_history, acc = train_model(model, X_train, y_train, X_val, y_val, 
+                                 epochs = 200, batch_size = 128)
+
+def plot_accuracy(history):
+    plt.figure(figsize = (10,6))
+    plt.plot(history.history['accuracy'], color = 'blue', label = 'train')
+    plt.plot(history.history['val_accuracy'], color = 'red', label = 'val')
+    plt.xlabel('Epochs')
+    plt.ylabel('Accuracy')
+    plt.legend()
+    plt.title('Accuracy measures during training process for AlexNet model')
+    plt.show()
+  
+plot_accuracy(train_history)
+
+y_test_pred = []
+for i in np.arange(len(X_test)):
+    img = X_test[i]
+    img = img.reshape(1, 256, 256, 1)
+    y_p = model.predict(img)
+    y_test_pred.append(y_p)
+
+y_test_pred = np.asarray(y_test_pred)
+
+# Initialize true labels
+y_test_labels = y_test
+# Threshold 0.5 for predicted labels
+y_test_pred_labels = (y_test_pred>0.5).astype(np.float)*1
+
+conf_mat = confusion_matrix(y_test_labels.ravel(), y_test_pred_labels.ravel())
+
+plt.figure(figsize = (10,8))
+sns.heatmap(conf_mat, linewidths = 0.1, cmap = 'Blues', linecolor = 'black', 
+            fmt = '.1f', annot = True)
+plt.xlabel('Predicted classes', fontsize = 20)
+plt.ylabel('True classes', fontsize = 20)
+
+# Get TN FN TP FP values
+tn = conf_mat[0][0]
+fn = conf_mat[1][0]
+tp = conf_mat[1][1]
+fp = conf_mat[0][1]
+
+# Precision
+precision = tp / (tp + fp)
+    
+# Recall
+recall = tp / (tp + fn)
+
+# F1 score
+F1 = 2*((precision*recall)/(precision+recall))
+
+# Accuracy
+accuracy = (tp+tn)/(tp+fp+tn+fn)
+
+print('Precision:', precision)
+print('Recall:', recall)
+print('F1 score:', F1)
+print('Accuracy:', accuracy)
+
+# Get AUC measures
+y_pred_keras = model.predict(X_test).ravel()
+fpr_keras, tpr_keras, thresholds_keras = roc_curve(y_test, y_pred_keras)
+
+auc_keras = auc(fpr_keras, tpr_keras)
+
+# Plot ROC Curve
+plt.figure(figsize = (8,6))
+plt.plot(fpr_keras, tpr_keras, label='Keras (area = {:.3f})'.format(auc_keras))
+plt.xlabel('False positive rate')
+plt.ylabel('True positive rate')
+plt.title('ROC curve')
+plt.legend(loc='best')
+plt.show()
+
+################################################# Training Simplified CNN Model and Evaluation ###########################################
+
+def CNNModel(hp):
+  # Initialize the model
+  model = Sequential()
+  
+  model_filters = hp.Int('filters', min_value=1, max_value=10, step=1)
+  ker_reg = hp.Choice('kernel_regularizer', values=[1.0, 1e-1, 1e-2, 1e-3, 1e-4])
+  ler_rate = hp.Choice('lr', values=[1.0, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6])
+  drop_rate = hp.Choice('rate', values=[0.1, 0.2, 0.3, 0.4, 0.5])
+
+  # layer 1: convolutional layer + max-pooling layer
+  model.add(layers.Conv2D(filters = model_filters, kernel_size = (8,8), strides= 4, padding = 'valid', 
+                   activation='relu', input_shape = (256,256,1), kernel_regularizer=regularizers.l2(ker_reg)))
+  model.add(layers.MaxPooling2D(pool_size = (3,3), strides = 4))
+
+  # layer 2: convolutional layer + max-pooling layer 
+  model.add(layers.Conv2D(filters = 6, kernel_size = (4,4), strides= 4, padding = 'same', 
+                   activation = 'relu', kernel_regularizer=regularizers.l2(ker_reg)))
+
+  # Two fully connected hidden layers and one fully connected output layer
+  model.add(layers.Flatten())
+  model.add(layers.Dense(54, activation = 'relu', kernel_regularizer=regularizers.l2(ker_reg)))
+  model.add(layers.BatchNormalization(epsilon=0.01))
+  model.add(layers.Dropout(rate = drop_rate))
+  model.add(layers.Dense(54, activation = 'relu', kernel_regularizer=regularizers.l2(ker_reg)))
+  model.add(layers.BatchNormalization(epsilon=0.01))
+  model.add(layers.Dense(1, activation = 'sigmoid'))
+
+  # compile the model with a loss funciton, a metric and and optimization method
+  opt = optimizers.Adamax(lr = ler_rate)
+  model.compile(loss = metrics.binary_crossentropy,
+                optimizer = opt,
+                metrics = ['accuracy'])
+
+  return model
+
+
+tuner = kt.Hyperband(CNNModel,
+                     objective='val_accuracy',
+                     max_epochs=200)
+
+stop_early = callbacks.EarlyStopping(monitor='val_loss', patience=5)
+
+tuner.search(X_train, y_train, epochs=200, validation_data=(X_val, y_val), callbacks=[stop_early])
+
+# Get the optimal hyperparameters
+best_parameters=tuner.get_best_hyperparameters(num_trials=1)[0]
+
+best_filter = best_parameters.get('filters')
+best_regularizer = best_parameters.get('kernel_regularizer')
+best_lr = best_parameters.get('lr')
+best_drop = best_parameters.get('rate')
+
+print("Best filter is:",best_filter)
+print("Best Dropout rate value is:", best_drop)
+print("Best kernel regulazier value is:", best_regularizer)
+print("Best learning rate for optimization function is:", best_lr)
+
+# Build the model with the optimal hyperparameters and train it on the data for 200 epochs
+model = tuner.hypermodel.build(best_parameters)
+train_history = model.fit(X_train, y_train, epochs=200, validation_data=(X_val, y_val))
+
+def plot_accuracy(history):
+    plt.figure(figsize = (10,6))
+    plt.plot(history.history['accuracy'], color = 'blue', label = 'train')
+    plt.plot(history.history['val_accuracy'], color = 'red', label = 'val')
+    plt.legend()
+    plt.title('Accuracy')
+    plt.show()
+  
+plot_accuracy(train_history)
+
+y_test_pred = []
+for i in np.arange(len(X_test)):
+    img = X_test[i]
+    img = img.reshape(1, 256, 256, 1)
+    y_p = model.predict(img)
+    y_test_pred.append(y_p)
+
+y_test_pred = np.asarray(y_test_pred)
+
+# Initialize true labels
+y_test_labels = y_test
+# Threshold 0.5 for predicted labels
+y_test_pred_labels = (y_test_pred>0.5).astype(np.float)*1
+
+conf_mat = confusion_matrix(y_test_labels.ravel(), y_test_pred_labels.ravel())
+
+plt.figure(figsize = (10,8))
+sns.heatmap(conf_mat, linewidths = 0.1, cmap = 'Blues', linecolor = 'black', 
+            fmt = '.1f', annot = True)
+plt.xlabel('Predicted classes', fontsize = 20)
+plt.ylabel('True classes', fontsize = 20)
+
+# Get TN FN TP FP values
+tn = conf_mat[0][0]
+fn = conf_mat[1][0]
+tp = conf_mat[1][1]
+fp = conf_mat[0][1]
+
+# Precision
+precision = tp / (tp + fp)
+    
+# Recall
+recall = tp / (tp + fn)
+
+# F1 score
+F1 = 2*((precision*recall)/(precision+recall))
+
+# Accuracy
+accuracy = (tp+tn)/(tp+fp+tn+fn)
+
+print('Precision:', precision)
+print('Recall:', recall)
+print('F1 score:', F1)
+print('Accuracy:', accuracy)
+
+# Get AUC measures
+y_pred_keras = model.predict(X_test).ravel()
+fpr_keras, tpr_keras, thresholds_keras = roc_curve(y_test, y_pred_keras)
+
+auc_keras = auc(fpr_keras, tpr_keras)
+
+# Plot ROC Curve
+plt.figure(figsize = (8,6))
+plt.plot(fpr_keras, tpr_keras, label='Keras (area = {:.3f})'.format(auc_keras))
+plt.xlabel('False positive rate')
+plt.ylabel('True positive rate')
+plt.title('ROC curve')
+plt.legend(loc='best')
+plt.show()
